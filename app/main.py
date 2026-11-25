@@ -34,7 +34,9 @@ def _db_conn(request: Request) -> sqlite3.Connection:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db_path = os.environ.get("ARCHIVE_DB", DEFAULT_DB_PATH)
-    init_db(app.state.db_path)
+    # Create or upgrade the archive before serving: the upgrade is idempotent
+    # and batched, so an interrupted run is retried on the next start.
+    app.state.upgraded_rows = init_db(app.state.db_path)
     yield
 
 
@@ -88,7 +90,11 @@ def healthz(request: Request) -> HealthOut:
         conn.execute("SELECT 1 FROM certificates LIMIT 1").fetchall()
     finally:
         conn.close()
-    return HealthOut(status="ok", db_path=request.app.state.db_path)
+    return HealthOut(
+        status="ok",
+        db_path=request.app.state.db_path,
+        upgraded_rows=getattr(request.app.state, "upgraded_rows", 0),
+    )
 
 
 # --------------------------------------------------------------------------

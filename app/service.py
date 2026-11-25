@@ -55,16 +55,7 @@ from .models import (
     RepairRef,
     RepairUpdateIn,
 )
-
-CANONICAL_TS = "%Y-%m-%dT%H:%M:%S.%fZ"
-
-
-def to_ts(value: datetime) -> str:
-    return value.astimezone(UTC).strftime(CANONICAL_TS)
-
-
-def from_ts(value: str) -> datetime:
-    return datetime.strptime(value, CANONICAL_TS).replace(tzinfo=UTC)
+from .timestamps import from_ts, to_ts
 
 
 def _iv(start: int, end: int) -> Interval:
@@ -218,26 +209,28 @@ def _load_cert(conn: sqlite3.Connection, cert_no: str) -> CertSnapshot:
 
         repairs = conn.execute(
             "SELECT order_no, occurred_at, start_mm, end_mm FROM repairs "
-            "WHERE weld_no = ? AND occurred_at > ? AND occurred_at < ? "
-            "ORDER BY occurred_at, order_no",
-            (row["weld_no"], ndt["completed_at"], row["issued_at"]),
+            "WHERE weld_no = ? ORDER BY order_no",
+            (row["weld_no"],),
         ).fetchall()
+
+        applicable: list[tuple[datetime, str, Interval]] = []
+        for rep in repairs:
+            occurred = from_ts(rep["occurred_at"])
+            # Compare actual UTC instants, not stored text: legacy archives may
+            # still hold unpadded years.  Repairs exactly at completion or at
+            # issuance do not cut the evidence.
+            if completed < occurred < issued_at:
+                applicable.append((occurred, rep["order_no"], _iv(rep["start_mm"], rep["end_mm"])))
+        applicable.sort(key=lambda item: (item[0], item[1]))
+
         cuts: list[Interval] = []
         refs: list[RepairRefData] = []
-        for rep in repairs:
-            rep_iv = _iv(rep["start_mm"], rep["end_mm"])
+        for occurred, rep_no, rep_iv in applicable:
             overlap = clipped.intersection(rep_iv)
             if overlap is None:
                 continue
             cuts.append(overlap)
-            refs.append(
-                RepairRefData(
-                    rep["order_no"],
-                    from_ts(rep["occurred_at"]),
-                    rep_iv,
-                    overlap,
-                )
-            )
+            refs.append(RepairRefData(rep_no, occurred, rep_iv, overlap))
 
         evidence.append(
             Evidence(
@@ -572,14 +565,15 @@ def correct_repair(
 def list_repairs(conn: sqlite3.Connection) -> list[RepairOut]:
     with read_tx(conn):
         rows = conn.execute(
-            "SELECT order_no, weld_no, occurred_at, start_mm, end_mm FROM repairs ORDER BY order_no"
+            "SELECT order_no, weld_no, occurred_at, start_mm, end_mm FROM repairs"
         ).fetchall()
-        return [
+        repairs = [
             RepairOut(
                 order_no=r["order_no"],
                 weld_no=r["weld_no"],
-                occurred_at=r["occurred_at"],
+                occurred_at=to_ts(from_ts(r["occurred_at"])),
                 interval=_iv_out(_iv(r["start_mm"], r["end_mm"])),
             )
             for r in rows
         ]
+    return sorted(repairs, key=lambda repair: repair.order_no)

@@ -2,8 +2,10 @@
 
 Timestamps are accepted as ISO-8601 with an offset (``Z`` is accepted); a
 naive timestamp is interpreted as UTC.  Stored and returned timestamps are
-canonical UTC strings with microsecond precision, so string comparison in
-SQLite is chronological.
+canonical UTC strings with a four-digit year and microsecond precision, so
+string comparison in SQLite is chronological.  Year 0001 is a valid value and
+is commonly used as a repair-order placeholder before the actual date is
+known.
 """
 
 from __future__ import annotations
@@ -200,3 +202,4 @@ class RepairIngestResult(BaseModel):
 class HealthOut(BaseModel):
     status: Literal["ok"]
     db_path: str
+    upgraded_rows: int = 0

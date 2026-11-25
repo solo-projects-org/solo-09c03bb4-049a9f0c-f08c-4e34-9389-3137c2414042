@@ -485,3 +485,87 @@ def test_invalid_intervals_rejected_for_ndt_and_repairs(client):
         },
     )
     assert r.status_code == 422
+
+
+# --------------------------------------------------------------------------
+# Year 0001 placeholders and canonical timestamps
+# --------------------------------------------------------------------------
+
+
+def test_timestamps_round_trip_four_digit_year_and_microseconds(client):
+    ndt = _ndt(client, "N1", at="0001-01-01T00:00:00.123456Z", end=1000)
+    assert ndt["completed_at"] == "0001-01-01T00:00:00.123456Z"
+    cert = _cert(client, "C1", at="9999-12-31T23:59:59.000001Z", cites=["N1"])
+    assert cert["issued_at"] == "9999-12-31T23:59:59.000001Z"
+    report = _gaps(client, "C1")
+    assert report["evidence"][0]["completed_at"] == "0001-01-01T00:00:00.123456Z"
+    assert report["evidence"][0]["trusted"] is True
+
+
+def test_year_zero_placeholder_repair_can_be_backfilled_and_corrected(client):
+    _ndt(client, "N1", at="0001-01-01T00:00:00Z", end=1000)
+    _cert(client, "C1", at="2026-01-10T00:00:00Z", cites=["N1"])
+    # The placeholder repair is accepted at the sentinel instant.
+    created = _repair(client, "R1", at="0001-01-01T00:00:00Z", start=300, end=400)
+    assert created["repair"]["occurred_at"] == "0001-01-01T00:00:00.000000Z"
+    assert created["changed_count"] == 0
+    assert _gaps(client, "C1")["gaps"] == []
+
+    # Supplying the real date via same-number correction must not fail and must
+    # report the correct before/after gaps.
+    r = client.put(
+        "/repairs/R1",
+        json={
+            "weld_no": "W1",
+            "occurred_at": "2026-01-05T00:00:00Z",
+            "start_mm": 300,
+            "end_mm": 400,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "corrected"
+    assert body["repair"]["occurred_at"] == "2026-01-05T00:00:00.000000Z"
+    change = body["changed_certificates"][0]
+    assert change["gaps_before"] == []
+    assert _ivs(change["gaps_after"]) == [(300, 400)]
+    assert _ivs(_gaps(client, "C1")["gaps"]) == [(300, 400)]
+
+
+def test_repair_exactly_at_film_or_issuance_never_cuts(client):
+    _ndt(client, "N1", at="2026-01-01T00:00:00.000000Z", end=1000)
+    _cert(client, "C1", at="2026-01-10T00:00:00.000000Z", cites=["N1"])
+    for at, start in (
+        ("2026-01-01T00:00:00.000000Z", 100),
+        ("2026-01-10T00:00:00.000000Z", 200),
+    ):
+        result = _repair(client, f"R{start}", at=at, start=start, end=start + 50)
+        assert result["candidates_checked"] == 0
+        assert result["changed_count"] == 0
+    assert _gaps(client, "C1")["gaps"] == []
+    assert _gaps(client, "C1")["evidence"][0]["effective_coverage"] == [
+        {"start_mm": 0, "end_mm": 1000}
+    ]
+
+
+def test_correction_to_issuance_instant_restores_gap(client):
+    _ndt(client, "N1", end=1000)
+    _cert(client, "C1", at="2026-01-10T00:00:00Z", cites=["N1"])
+    _repair(client, "R1", at="2026-01-05T00:00:00Z", start=300, end=400)
+    assert _ivs(_gaps(client, "C1")["gaps"]) == [(300, 400)]
+    r = client.put(
+        "/repairs/R1",
+        json={
+            "weld_no": "W1",
+            "occurred_at": "2026-01-10T00:00:00Z",
+            "start_mm": 300,
+            "end_mm": 400,
+        },
+    )
+    assert r.status_code == 200, r.text
+    change = r.json()["changed_certificates"][0]
+    assert _ivs(change["gaps_before"]) == [(300, 400)]
+    assert change["gaps_after"] == []
+    assert _gaps(client, "C1")["evidence"][0]["effective_coverage"] == [
+        {"start_mm": 0, "end_mm": 1000}
+    ]

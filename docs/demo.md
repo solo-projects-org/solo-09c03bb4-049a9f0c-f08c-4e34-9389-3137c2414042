@@ -77,3 +77,44 @@
 把返修起点挪到核准段之外（例如 `start_mm: 0, end_mm: 100`），或把
 `occurred_at` 改到签发之后（`2026-03-10T09:00:00Z`），再 `PUT` 一次，
 返回的 `gaps_after` 会恢复为 `[]`：签发后的返修不倒推，交集外的部分不失效。
+
+## 6. 年份前导零与旧证
+
+四位年份在请求和响应里都保留。先补录一张**占位**返修单（尚未确定实际
+日期）：
+
+`POST /repairs`
+
+```json
+{
+  "order_no": "REP-PLACEHOLDER",
+  "weld_no": "W-100",
+  "occurred_at": "0001-01-01T00:00:00Z",
+  "start_mm": 700,
+  "end_mm": 800
+}
+```
+
+返回 `repair.occurred_at = "0001-01-01T00:00:00.000000Z"`，`changed_count = 0`
+（占位时刻在探伤完成之前，不截断覆盖）。
+
+再用同号更正补上实际日期：
+
+`PUT /repairs/REP-PLACEHOLDER`
+
+```json
+{
+  "weld_no": "W-100",
+  "occurred_at": "2026-03-06T09:00:00Z",
+  "start_mm": 700,
+  "end_mm": 800
+}
+```
+
+`action` 为 `corrected`，`changed_certificates[0].gaps_after` 增加
+`700–800`。若把 `occurred_at` 改到**签发同刻** `2026-03-10T09:00:00Z`，
+`gaps_after` 会恢复为 `[]`，探伤覆盖不被截断。
+
+旧卷（含 `1-01-01T00:00:00.000000Z` 这类缺前导零的时刻）无需手工处理：
+`docker compose up` 启动时会自动转换，`GET /healthz` 的 `upgraded_rows`
+可核对转换行数。随后用 `GET /certificates/<旧证号>/gaps` 查旧证即可。
